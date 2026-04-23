@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the platform (patient or doctor).",
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "enum": ["patient", "doctor"] },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" },
+        "updatedAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["role", "email", "name", "createdAt", "updatedAt"]
+    },
+    "DoctorProfile": {
+      "title": "DoctorProfile",
+      "description": "Profile information for a doctor.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "References the base User doc" },
+        "specialty": { "type": "string" },
+        "experience": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" },
+        "updatedAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["userId", "specialty", "experience", "createdAt", "updatedAt"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "An appointment between a patient and a doctor.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string" },
+        "doctorId": { "type": "string" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "confirmed", "completed", "cancelled"] },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" },
+        "updatedAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["patientId", "doctorId", "date", "status", "createdAt", "updatedAt"]
+    },
+    "MedicalRecord": {
+      "title": "MedicalRecord",
+      "description": "A medical record uploaded by a patient.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string" },
+        "name": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "fileType": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["patientId", "name", "fileUrl", "fileType", "createdAt"]
+    },
+    "SymptomLog": {
+      "title": "SymptomLog",
+      "description": "A symptom log submitted by a patient.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string" },
+        "symptoms": { "type": "string" },
+        "aiAnalysis": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["patientId", "symptoms", "createdAt"]
+    },
+    "Reminder": {
+      "title": "Reminder",
+      "description": "A medication or health reminder for a patient.",
+      "type": "object",
+      "properties": {
+        "patientId": { "type": "string" },
+        "text": { "type": "string" },
+        "time": { "type": "string" },
+        "createdAt": { "type": "string", "format": "timestamp" }
+      },
+      "required": ["patientId", "text", "time", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User accounts"
+    },
+    "/doctors/{doctorId}": {
+      "schema": { "$ref": "#/entities/DoctorProfile" },
+      "description": "Doctor profiles"
+    },
+    "/appointments/{appointmentId}": {
+      "schema": { "$ref": "#/entities/Appointment" },
+      "description": "Appointments"
+    },
+    "/medical_records/{recordId}": {
+      "schema": { "$ref": "#/entities/MedicalRecord" },
+      "description": "Medical records"
+    },
+    "/symptom_logs/{logId}": {
+      "schema": { "$ref": "#/entities/SymptomLog" },
+      "description": "Symptom logs"
+    },
+    "/reminders/{reminderId}": {
+      "schema": { "$ref": "#/entities/Reminder" },
+      "description": "Reminders"
+    }
+  }
+}

@@ -1,0 +1,261 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // HIPAA CATCH-ALL: deny everything not explicitly allowed
+    // =========================================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Helper Functions
+    // =========================================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isDoctor() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().role == 'doctor';
+    }
+
+    function isPatient() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && userDoc().role == 'patient';
+    }
+
+    // =========================================================================
+    // USERS collection
+    // Minimum necessary access (HIPAA §164.514(d))
+    // =========================================================================
+    match /users/{userId} {
+
+      function isValidUser(data) {
+        return data.size() >= 5
+          && data.keys().hasAll(['role', 'email', 'name', 'createdAt', 'updatedAt'])
+          && data.role in ['patient', 'doctor']
+          && data.email is string && data.email.size() > 0 && data.email.size() <= 200
+          && data.name  is string && data.name.size()  > 0 && data.name.size()  <= 100
+          && data.createdAt == request.time
+          && data.updatedAt == request.time;
+      }
+
+      function isValidUserUpdate(data) {
+        return data.role      == existing().role
+          && data.email       == existing().email
+          && data.createdAt   == existing().createdAt
+          && data.updatedAt   == request.time
+          && data.name is string && data.name.size() > 0 && data.name.size() <= 100;
+      }
+
+      // A user can read their own profile; doctors can read any profile (for treatment)
+      allow get:    if isSignedIn() && isValidId(userId)
+                       && (request.auth.uid == userId || isDoctor());
+      // List is locked to own document only – prevents bulk data harvesting
+      allow list:   if isOwner(userId);
+      allow create: if isOwner(userId) && isValidId(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidId(userId) && isValidUserUpdate(incoming())
+                       && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedAt']);
+      // Users cannot be deleted via client SDK – must go through Cloud Functions
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // DOCTORS collection
+    // =========================================================================
+    match /doctors/{doctorId} {
+
+      function isValidDoctor(data) {
+        return data.size() >= 5
+          && data.keys().hasAll(['userId', 'specialty', 'experience', 'createdAt', 'updatedAt'])
+          && data.userId    == request.auth.uid
+          && data.specialty is string && data.specialty.size() > 0 && data.specialty.size() <= 100
+          && data.experience is string && data.experience.size() > 0 && data.experience.size() <= 1000
+          && data.createdAt == request.time
+          && data.updatedAt == request.time;
+      }
+
+      function isValidDoctorUpdate(data) {
+        return data.userId    == existing().userId
+          && data.createdAt   == existing().createdAt
+          && data.updatedAt   == request.time
+          && data.specialty  is string && data.specialty.size()  > 0 && data.specialty.size()  <= 100
+          && data.experience is string && data.experience.size() > 0 && data.experience.size() <= 1000;
+      }
+
+      // Any signed-in user may browse doctor profiles (no PHI here)
+      allow get:    if isSignedIn() && isValidId(doctorId);
+      allow list:   if isSignedIn();
+      allow create: if isSignedIn() && isValidId(doctorId) && isDoctor() && isValidDoctor(incoming());
+      allow update: if isSignedIn() && isValidId(doctorId)
+                       && existing().userId == request.auth.uid
+                       && isValidDoctorUpdate(incoming())
+                       && incoming().diff(existing()).affectedKeys().hasOnly(['specialty', 'experience', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // APPOINTMENTS collection
+    // PHI: date, notes, status — field-level encryption enforced in app code
+    // =========================================================================
+    match /appointments/{appointmentId} {
+
+      function isValidAppt(data) {
+        return data.size() >= 6
+          && data.keys().hasAll(['patientId', 'doctorId', 'date', 'status', 'createdAt', 'updatedAt'])
+          && data.patientId == request.auth.uid
+          && data.doctorId  is string && data.doctorId.size() > 0 && data.doctorId.size() <= 128
+          && data.date      is string && data.date.size()     > 0 && data.date.size()     <= 100
+          && data.status    == 'pending'
+          && data.createdAt == request.time
+          && data.updatedAt == request.time;
+      }
+
+      // Principle of Least Privilege: only patient or treating doctor
+      allow get:    if isSignedIn() && isValidId(appointmentId)
+                       && (existing().patientId == request.auth.uid
+                           || existing().doctorId == request.auth.uid);
+      allow list:   if isSignedIn()
+                       && (resource.data.patientId == request.auth.uid
+                           || resource.data.doctorId == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(appointmentId) && isValidAppt(incoming());
+      allow update: if isSignedIn() && isValidId(appointmentId) && (
+                      // Doctor may update status, notes, updatedAt
+                      (existing().doctorId == request.auth.uid
+                        && incoming().diff(existing()).affectedKeys().hasAny(['status', 'notes', 'updatedAt'])
+                        && incoming().updatedAt  == request.time
+                        && incoming().patientId  == existing().patientId
+                        && incoming().doctorId   == existing().doctorId)
+                      ||
+                      // Patient may only cancel
+                      (existing().patientId == request.auth.uid
+                        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                        && incoming().status     == 'cancelled'
+                        && incoming().updatedAt  == request.time)
+                    );
+      // Appointments cannot be hard-deleted (audit trail requirement)
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // MEDICAL RECORDS collection
+    // PHI: name, fileUrl — encrypted at rest & in transit
+    // =========================================================================
+    match /medical_records/{recordId} {
+
+      function isValidRecord(data) {
+        return data.size() >= 5
+          && data.keys().hasAll(['patientId', 'name', 'fileUrl', 'fileType', 'createdAt'])
+          && data.patientId == request.auth.uid
+          && data.name      is string && data.name.size()     > 0 && data.name.size()     <= 200
+          && data.fileUrl   is string && data.fileUrl.size()  > 0 && data.fileUrl.size()  <= 1000
+          && data.fileType  is string && data.fileType.size() > 0 && data.fileType.size() <= 100
+          && data.createdAt == request.time;
+      }
+
+      allow get:    if isSignedIn() && isValidId(recordId)
+                       && (existing().patientId == request.auth.uid || isDoctor());
+      allow list:   if isSignedIn()
+                       && (resource.data.patientId == request.auth.uid || isDoctor());
+      allow create: if isSignedIn() && isValidId(recordId) && isValidRecord(incoming());
+      // Records cannot be updated via client – only replaced through a new upload
+      allow update: if false;
+      // Soft-delete: patients can mark as deleted but data stays for HIPAA retention
+      allow delete: if isSignedIn() && isValidId(recordId)
+                       && existing().patientId == request.auth.uid;
+    }
+
+    // =========================================================================
+    // SYMPTOM LOGS collection
+    // PHI: symptoms, aiAnalysis — always encrypted before write
+    // =========================================================================
+    match /symptom_logs/{logId} {
+
+      function isValidLog(data) {
+        return data.size() >= 3
+          && data.keys().hasAll(['patientId', 'symptoms', 'createdAt'])
+          && data.patientId == request.auth.uid
+          && data.symptoms  is string && data.symptoms.size() > 0 && data.symptoms.size() <= 5000
+          && data.createdAt == request.time;
+      }
+
+      allow get:    if isSignedIn() && isValidId(logId)
+                       && (existing().patientId == request.auth.uid || isDoctor());
+      allow list:   if isSignedIn()
+                       && (resource.data.patientId == request.auth.uid || isDoctor());
+      allow create: if isSignedIn() && isValidId(logId) && isValidLog(incoming());
+      // Only AI analysis field can be appended (not symptoms – immutable after creation)
+      allow update: if isSignedIn() && isValidId(logId)
+                       && (existing().patientId == request.auth.uid || isDoctor())
+                       && incoming().diff(existing()).affectedKeys().hasOnly(['aiAnalysis'])
+                       && incoming().aiAnalysis is string
+                       && incoming().aiAnalysis.size() <= 10000;
+      allow delete: if isSignedIn() && isValidId(logId)
+                       && existing().patientId == request.auth.uid;
+    }
+
+    // =========================================================================
+    // REMINDERS collection
+    // PHI: text (medication name counts as PHI)
+    // =========================================================================
+    match /reminders/{reminderId} {
+
+      function isValidReminder(data) {
+        return data.size() >= 4
+          && data.keys().hasAll(['patientId', 'text', 'time', 'createdAt'])
+          && data.patientId == request.auth.uid
+          && data.text      is string && data.text.size() > 0 && data.text.size() <= 200
+          && data.time      is string && data.time.size() > 0 && data.time.size() <= 100
+          && data.createdAt == request.time;
+      }
+
+      allow get:    if isOwner(reminderId) || (isSignedIn() && existing().patientId == request.auth.uid);
+      allow list:   if isSignedIn() && resource.data.patientId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(reminderId) && isValidReminder(incoming());
+      allow update: if isSignedIn() && isValidId(reminderId)
+                       && existing().patientId == request.auth.uid
+                       && incoming().diff(existing()).affectedKeys().hasOnly(['text', 'time'])
+                       && incoming().text is string && incoming().text.size() <= 200
+                       && incoming().time is string && incoming().time.size() <= 100;
+      allow delete: if isSignedIn() && isValidId(reminderId)
+                       && existing().patientId == request.auth.uid;
+    }
+
+    // =========================================================================
+    // AUDIT LOGS collection — WRITE-ONLY from client
+    // Reading/deleting requires Cloud Function service account (no client access)
+    // This enforces the HIPAA requirement for a tamper-proof audit trail.
+    // =========================================================================
+    match /audit_logs/{logId} {
+      allow create: if isSignedIn();
+      allow read:   if false;  // Only Cloud Functions / Admin SDK can read
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}

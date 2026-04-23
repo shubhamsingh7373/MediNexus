@@ -1,0 +1,6 @@
+{
+  "name": "Healix AI",
+  "description": "Full-stack MedTech web application with patient/doctor dashboards, AI-powered symptom analysis, appointments, and secure medical records.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

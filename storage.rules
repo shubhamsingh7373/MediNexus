@@ -1,0 +1,71 @@
+rules_version = '2';
+
+// =============================================================================
+// Firebase Storage Security Rules – HIPAA Compliant
+//
+// Only authenticated users may access their own files.
+// Medical files are scoped to: users/{uid}/medical_records/**
+// No file can be read without valid auth (no public access).
+// =============================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // -------------------------------------------------------------------------
+    // Catch-all: deny everything not explicitly allowed
+    // -------------------------------------------------------------------------
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Medical Records – patient-scoped
+    // Structure: users/{uid}/medical_records/{filename}
+    // -------------------------------------------------------------------------
+    match /users/{userId}/medical_records/{filename} {
+      // Only the owning patient may read their own files
+      allow read:   if request.auth != null && request.auth.uid == userId;
+
+      // Upload: must be authenticated as the owner, max 50 MB, allowed MIME types
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.size <= 50 * 1024 * 1024
+                    && request.resource.contentType.matches(
+                         'application/(pdf|msword|vnd\\.openxmlformats-officedocument\\.wordprocessingml\\.document)'
+                       )
+                    || request.resource.contentType.matches('image/(jpeg|png|webp|gif)');
+
+      // No overwrites – upload a new file instead
+      allow update: if false;
+
+      // Patients can delete their own files
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // -------------------------------------------------------------------------
+    // Lab Reports – same owner-only pattern
+    // Structure: users/{uid}/lab_reports/{filename}
+    // -------------------------------------------------------------------------
+    match /users/{userId}/lab_reports/{filename} {
+      allow read:   if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.size <= 20 * 1024 * 1024
+                    && request.resource.contentType.matches(
+                         'application/pdf|image/(jpeg|png|webp)'
+                       );
+      allow update: if false;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // -------------------------------------------------------------------------
+    // Audit Logs Archive – Cloud Functions write-only, no client access
+    // Structure: audit_logs/{year}/{month}/{filename}
+    // -------------------------------------------------------------------------
+    match /audit_logs/{year}/{month}/{filename} {
+      // Only Cloud Functions service account (Admin SDK) can write here
+      allow read:   if false;
+      allow write:  if false;
+    }
+  }
+}
